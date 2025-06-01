@@ -15,12 +15,7 @@ variable "prefixes" {
     prefix      = string
     description = optional(string)
     status      = optional(string, "active")
-    is_pool     = optional(bool, false)
-    vrf_id      = optional(number)
-    site_id     = optional(number)
     tenant_id   = optional(number)
-    role_id     = optional(number)
-    tags        = optional(list(string), [])
   }))
   default = {}
 }

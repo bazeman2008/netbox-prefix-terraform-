@@ -5,6 +5,49 @@ set -e
 TFVARS_FILE="terraform.tfvars"
 TFVARS_EXAMPLE="terraform.tfvars.example"
 
+# Dependency checking for air-gapped environments
+check_dependencies() {
+    local missing_deps=()
+    local terraform_cmd=""
+    
+    # Check for required commands
+    for cmd in grep sed awk head tail; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            missing_deps+=("$cmd")
+        fi
+    done
+    
+    # Find Terraform binary
+    if command -v terraform >/dev/null 2>&1; then
+        terraform_cmd="terraform"
+    elif [[ -x "$HOME/bin/terraform" ]]; then
+        terraform_cmd="$HOME/bin/terraform"
+    elif [[ -x "/usr/local/bin/terraform" ]]; then
+        terraform_cmd="/usr/local/bin/terraform"
+    else
+        missing_deps+=("terraform")
+    fi
+    
+    # Check for provider
+    if [[ ! -d ".terraform/providers" ]] && [[ -n "$terraform_cmd" ]]; then
+        echo "⚠️  Terraform providers not found. Run 'terraform init' or use setup-airgapped.sh"
+    fi
+    
+    if [[ ${#missing_deps[@]} -gt 0 ]]; then
+        echo "❌ Missing dependencies: ${missing_deps[*]}"
+        echo "💡 For air-gapped setup, run: ./setup-airgapped.sh --prepare"
+        echo "💡 Then in air-gapped environment: ./setup-airgapped.sh --install"
+        exit 1
+    fi
+    
+    echo "✓ All dependencies satisfied"
+    
+    # Set the terraform command for the rest of the script
+    if [[ -n "$terraform_cmd" ]]; then
+        export TERRAFORM_CMD="$terraform_cmd"
+    fi
+}
+
 show_help() {
     cat << EOF
 Usage: $0 [OPTIONS]
@@ -125,23 +168,6 @@ add_prefix_interactive() {
     
     local description=$(get_user_input "Description" "" "false")
     local status=$(get_user_input "Status" "active" "false")
-    local is_pool=$(get_user_input "Is pool? (true/false)" "false" "false")
-    
-    local vrf_id
-    while true; do
-        vrf_id=$(get_user_input "VRF ID (optional)" "" "false")
-        if [[ -z "$vrf_id" ]] || validate_number "$vrf_id"; then
-            break
-        fi
-    done
-    
-    local site_id
-    while true; do
-        site_id=$(get_user_input "Site ID (optional)" "" "false")
-        if [[ -z "$site_id" ]] || validate_number "$site_id"; then
-            break
-        fi
-    done
     
     local tenant_id
     while true; do
@@ -151,22 +177,12 @@ add_prefix_interactive() {
         fi
     done
     
-    local role_id
-    while true; do
-        role_id=$(get_user_input "Role ID (optional)" "" "false")
-        if [[ -z "$role_id" ]] || validate_number "$role_id"; then
-            break
-        fi
-    done
-    
-    local tags=$(get_user_input "Tags (comma-separated, optional)" "" "false")
-    
-    add_prefix_to_file "$name" "$prefix" "$description" "$status" "$is_pool" "$vrf_id" "$site_id" "$tenant_id" "$role_id" "$tags"
+    add_prefix_to_file "$name" "$prefix" "$description" "$status" "$tenant_id"
 }
 
 run_terraform_commands() {
     local prefix_name="$1"
-    local terraform_cmd="$HOME/bin/terraform"
+    local terraform_cmd="${TERRAFORM_CMD:-$HOME/bin/terraform}"
     
     echo
     echo "=== Running Terraform Commands ==="
@@ -215,67 +231,50 @@ add_prefix_to_file() {
     local prefix="$2"
     local description="$3"
     local status="$4"
-    local is_pool="$5"
-    local vrf_id="$6"
-    local site_id="$7"
-    local tenant_id="$8"
-    local role_id="$9"
-    local tags="${10}"
+    local tenant_id="$5"
     
     if grep -q "\"$name\"" "$TFVARS_FILE"; then
         echo "Error: Prefix with name '$name' already exists in $TFVARS_FILE"
         exit 1
     fi
     
-    local prefix_block="  \"$name\" = {\n"
-    prefix_block+="    prefix      = \"$prefix\"\n"
+    # Create a temporary file with the new prefix block
+    local temp_file=$(mktemp)
+    cat > "$temp_file" << EOF
+  "$name" = {
+    prefix      = "$prefix"
+EOF
     
     if [[ -n "$description" ]]; then
-        prefix_block+="    description = \"$description\"\n"
+        echo "    description = \"$description\"" >> "$temp_file"
     fi
     
-    prefix_block+="    status      = \"$status\"\n"
-    prefix_block+="    is_pool     = $is_pool\n"
-    
-    if [[ -n "$vrf_id" ]]; then
-        prefix_block+="    vrf_id      = $vrf_id\n"
-    fi
-    
-    if [[ -n "$site_id" ]]; then
-        prefix_block+="    site_id     = $site_id\n"
-    fi
+    echo "    status      = \"$status\"" >> "$temp_file"
     
     if [[ -n "$tenant_id" ]]; then
-        prefix_block+="    tenant_id   = $tenant_id\n"
+        echo "    tenant_id   = $tenant_id" >> "$temp_file"
     fi
     
-    if [[ -n "$role_id" ]]; then
-        prefix_block+="    role_id     = $role_id\n"
-    fi
+    echo "  }" >> "$temp_file"
+    echo "  " >> "$temp_file"
     
-    if [[ -n "$tags" ]]; then
-        IFS=',' read -ra TAG_ARRAY <<< "$tags"
-        local tag_list="["
-        for i in "${!TAG_ARRAY[@]}"; do
-            local tag=$(echo "${TAG_ARRAY[$i]}" | xargs)
-            if [[ $i -eq 0 ]]; then
-                tag_list+="\"$tag\""
-            else
-                tag_list+=", \"$tag\""
-            fi
-        done
-        tag_list+="]"
-        prefix_block+="    tags        = $tag_list\n"
-    fi
-    
-    prefix_block+="  }\n"
-    
+    # Add the prefix before the closing brace
     if grep -q "^}" "$TFVARS_FILE"; then
-        sed -i "/^}/i\\$prefix_block" "$TFVARS_FILE"
+        # Create a new file with content inserted before the last closing brace
+        local backup_file="${TFVARS_FILE}.backup"
+        cp "$TFVARS_FILE" "$backup_file"
+        
+        # Remove the last closing brace, add our content, then add the closing brace back
+        head -n -1 "$TFVARS_FILE" > "${TFVARS_FILE}.tmp"
+        cat "$temp_file" >> "${TFVARS_FILE}.tmp"
+        echo "}" >> "${TFVARS_FILE}.tmp"
+        mv "${TFVARS_FILE}.tmp" "$TFVARS_FILE"
     else
-        echo -e "\n$prefix_block" >> "$TFVARS_FILE"
+        # Append to the file
+        cat "$temp_file" >> "$TFVARS_FILE"
     fi
     
+    rm -f "$temp_file"
     echo "✓ Added prefix '$name' to $TFVARS_FILE"
     
     # Run terraform commands
@@ -306,6 +305,9 @@ main() {
                 ;;
         esac
     done
+    
+    # Check dependencies first
+    check_dependencies
     
     create_tfvars_if_not_exists
     

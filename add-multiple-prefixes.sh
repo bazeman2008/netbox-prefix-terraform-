@@ -6,6 +6,49 @@
 TFVARS_FILE="terraform.tfvars"
 TFVARS_EXAMPLE="terraform.tfvars.example"
 
+# Dependency checking for air-gapped environments
+check_dependencies() {
+    local missing_deps=()
+    local terraform_cmd=""
+    
+    # Check for required commands
+    for cmd in grep sed awk head tail; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            missing_deps+=("$cmd")
+        fi
+    done
+    
+    # Find Terraform binary
+    if command -v terraform >/dev/null 2>&1; then
+        terraform_cmd="terraform"
+    elif [[ -x "$HOME/bin/terraform" ]]; then
+        terraform_cmd="$HOME/bin/terraform"
+    elif [[ -x "/usr/local/bin/terraform" ]]; then
+        terraform_cmd="/usr/local/bin/terraform"
+    else
+        missing_deps+=("terraform")
+    fi
+    
+    # Check for provider
+    if [[ ! -d ".terraform/providers" ]] && [[ -n "$terraform_cmd" ]]; then
+        echo "⚠️  Terraform providers not found. Run 'terraform init' or use setup-airgapped.sh"
+    fi
+    
+    if [[ ${#missing_deps[@]} -gt 0 ]]; then
+        echo "❌ Missing dependencies: ${missing_deps[*]}"
+        echo "💡 For air-gapped setup, run: ./setup-airgapped.sh --prepare"
+        echo "💡 Then in air-gapped environment: ./setup-airgapped.sh --install"
+        exit 1
+    fi
+    
+    echo "✓ All dependencies satisfied"
+    
+    # Set the terraform command for the rest of the script
+    if [[ -n "$terraform_cmd" ]]; then
+        export TERRAFORM_CMD="$terraform_cmd"
+    fi
+}
+
 show_help() {
     cat << EOF
 Usage: $0 [OPTIONS]
@@ -206,7 +249,7 @@ add_prefix_to_file() {
     local prefix="$2"
     local description="$3"
     local status="$4"
-    local is_pool="$5"
+    local tenant_id="$5"
     
     if grep -q "\"$name\"" "$TFVARS_FILE"; then
         echo "Warning: Prefix with name '$name' already exists in $TFVARS_FILE, skipping..."
@@ -220,7 +263,13 @@ add_prefix_to_file() {
     prefix      = "$prefix"
     description = "$description"
     status      = "$status"
-    is_pool     = $is_pool
+EOF
+    
+    if [[ -n "$tenant_id" ]]; then
+        echo "    tenant_id   = $tenant_id" >> "$temp_file"
+    fi
+    
+    cat >> "$temp_file" << EOF
   }
   
 EOF
@@ -246,7 +295,7 @@ EOF
 }
 
 run_terraform_commands() {
-    local terraform_cmd="$HOME/bin/terraform"
+    local terraform_cmd="${TERRAFORM_CMD:-$HOME/bin/terraform}"
     
     echo
     echo "=== Running Terraform Commands ==="
@@ -331,12 +380,17 @@ add_multiple_prefixes_interactive() {
     local desc_prefix
     desc_prefix=$(get_user_input "Description prefix" "Subnet" "false")
     
-    # Get status and pool settings
+    # Get status and tenant settings
     local status
     status=$(get_user_input "Status for all subnets" "active" "false")
     
-    local is_pool
-    is_pool=$(get_user_input "Are these pool subnets? (true/false)" "false" "false")
+    local tenant_id
+    while true; do
+        tenant_id=$(get_user_input "Tenant ID for all subnets (optional)" "" "false")
+        if [[ -z "$tenant_id" ]] || validate_number "$tenant_id"; then
+            break
+        fi
+    done
     
     echo
     echo "=== Summary ==="
@@ -346,7 +400,7 @@ add_multiple_prefixes_interactive() {
     echo "Base name: ${base_name:-'subnet_X_X_X'}"
     echo "Description: $desc_prefix"
     echo "Status: $status"
-    echo "Is pool: $is_pool"
+    echo "Tenant ID: ${tenant_id:-'(none)'}"
     echo
     
     # Generate preview
@@ -402,7 +456,7 @@ add_multiple_prefixes_interactive() {
         local description="$desc_prefix $current_ip$cidr"
         
         echo "Processing subnet $((i+1))/$count: $subnet_name ($current_ip$cidr)..."
-        if add_prefix_to_file "$subnet_name" "$current_ip$cidr" "$description" "$status" "$is_pool"; then
+        if add_prefix_to_file "$subnet_name" "$current_ip$cidr" "$description" "$status" "$tenant_id"; then
             echo "✓ Added: $subnet_name ($current_ip$cidr)"
             ((added_count++))
         else
@@ -438,6 +492,9 @@ main() {
                 ;;
         esac
     done
+    
+    # Check dependencies first
+    check_dependencies
     
     create_tfvars_if_not_exists
     add_multiple_prefixes_interactive

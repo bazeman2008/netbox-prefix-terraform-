@@ -18,10 +18,5 @@ resource "netbox_prefix" "prefixes" {
   prefix      = each.value.prefix
   description = each.value.description
   status      = each.value.status
-  is_pool     = each.value.is_pool
-  vrf_id      = each.value.vrf_id
-  site_id     = each.value.site_id
   tenant_id   = each.value.tenant_id
-  role_id     = each.value.role_id
-  tags        = each.value.tags
 }

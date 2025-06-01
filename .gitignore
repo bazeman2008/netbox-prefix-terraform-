@@ -35,6 +35,9 @@ Thumbs.db
 # Logs
 *.log
 
+# Message logging script (contains personal data)
+message_logger.sh
+
 # Backup files
 *.bak
 *.backup
