@@ -164,6 +164,52 @@ add_prefix_interactive() {
     add_prefix_to_file "$name" "$prefix" "$description" "$status" "$is_pool" "$vrf_id" "$site_id" "$tenant_id" "$role_id" "$tags"
 }
 
+run_terraform_commands() {
+    local prefix_name="$1"
+    local terraform_cmd="$HOME/bin/terraform"
+    
+    echo
+    echo "=== Running Terraform Commands ==="
+    echo
+    
+    # Check if terraform is already initialized
+    if [[ ! -d ".terraform" ]]; then
+        echo "🔄 Initializing Terraform..."
+        if $terraform_cmd init; then
+            echo "✓ Terraform initialized successfully"
+        else
+            echo "❌ Terraform init failed"
+            return 1
+        fi
+        echo
+    fi
+    
+    echo "🔍 Planning Terraform changes..."
+    if $terraform_cmd plan; then
+        echo "✓ Terraform plan completed"
+    else
+        echo "❌ Terraform plan failed"
+        return 1
+    fi
+    
+    echo
+    echo "🚀 Applying Terraform changes..."
+    echo "This will create the prefix '$prefix_name' in NetBox..."
+    
+    echo "Do you want to apply these changes to NetBox? (y/N)"
+    read -r confirm
+    if [[ $confirm =~ ^[Yy]$ ]]; then
+        if $terraform_cmd apply -auto-approve; then
+            echo "✅ Prefix '$prefix_name' successfully created in NetBox!"
+        else
+            echo "❌ Terraform apply failed"
+            return 1
+        fi
+    else
+        echo "⏸️  Terraform apply cancelled. Run 'terraform apply' manually when ready."
+    fi
+}
+
 add_prefix_to_file() {
     local name="$1"
     local prefix="$2"
@@ -231,7 +277,9 @@ add_prefix_to_file() {
     fi
     
     echo "✓ Added prefix '$name' to $TFVARS_FILE"
-    echo "Run 'terraform plan' to preview changes, then 'terraform apply' to create the prefix in NetBox."
+    
+    # Run terraform commands
+    run_terraform_commands "$name"
 }
 
 main() {
