@@ -95,7 +95,22 @@ create_tfvars_if_not_exists() {
 }
 
 add_prefix_interactive() {
-    echo "=== Adding New NetBox Prefix ==="
+    echo "=== NetBox Prefix Management ==="
+    echo
+    
+    # First ask what prefix they want to add
+    local prefix
+    while true; do
+        echo "What IP prefix would you like to add to NetBox?"
+        prefix=$(get_user_input "Enter CIDR prefix (e.g., 192.168.1.0/24, 10.0.0.0/16)" "" "true")
+        if validate_cidr "$prefix"; then
+            break
+        fi
+    done
+    
+    echo
+    echo "Adding prefix: $prefix"
+    echo "Now let's configure the details..."
     echo
     
     local name
@@ -105,14 +120,6 @@ add_prefix_interactive() {
             break
         else
             echo "Error: Name must start with letter and contain only letters, numbers, and underscores"
-        fi
-    done
-    
-    local prefix
-    while true; do
-        prefix=$(get_user_input "CIDR prefix (e.g., 192.168.1.0/24)" "" "true")
-        if validate_cidr "$prefix"; then
-            break
         fi
     done
     
