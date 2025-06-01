@@ -1,11 +1,12 @@
 #!/bin/bash
 
 # Air-gapped environment setup script for NetBox Terraform project
-# This script prepares the environment with all necessary dependencies
+# This script sets up the environment using ONLY offline bundles - NO INTERNET ACCESS
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OFFLINE_BUNDLES="$SCRIPT_DIR/offline-bundles"
 TERRAFORM_VERSION="1.5.7"
 NETBOX_PROVIDER_VERSION="3.11.0"
 
@@ -13,18 +14,22 @@ show_help() {
     cat << EOF
 Usage: $0 [OPTIONS]
 
-Setup script for air-gapped NetBox Terraform environment.
+Air-gapped setup script for NetBox Terraform environment.
+This script works OFFLINE ONLY using files from offline-bundles/ directory.
 
 OPTIONS:
     -h, --help          Show this help message
-    -c, --check         Check dependencies only (don't install)
-    -i, --install       Install missing dependencies
-    -p, --prepare       Prepare offline bundles for air-gapped deployment
+    -c, --check         Check if environment is properly configured
+    -i, --install       Install providers and setup from offline bundles
     
 EXAMPLES:
-    $0 --check         # Check what dependencies are missing
-    $0 --install       # Install missing dependencies
-    $0 --prepare       # Prepare offline bundles
+    $0 --check         # Check if everything is configured
+    $0 --install       # Install providers from offline bundles
+
+REQUIREMENTS:
+- offline-bundles/ directory must exist with provider files
+- No internet access required or used
+- All dependencies must be pre-installed on the system
 
 EOF
 }
@@ -36,20 +41,16 @@ log() {
 check_command() {
     local cmd="$1"
     local desc="$2"
-    local install_hint="$3"
-    local optional="$4"
+    local required="$3"
     
     if command -v "$cmd" >/dev/null 2>&1; then
         log "✓ $desc found: $(command -v "$cmd")"
         return 0
     else
-        if [[ "$optional" == "true" ]]; then
-            log "⚠️  $desc not found (optional)"
+        if [[ "$required" == "true" ]]; then
+            log "❌ $desc not found (REQUIRED for air-gapped environment)"
         else
-            log "❌ $desc not found"
-        fi
-        if [[ -n "$install_hint" ]]; then
-            log "   Install with: $install_hint"
+            log "⚠️  $desc not found (optional)"
         fi
         return 1
     fi
@@ -58,257 +59,199 @@ check_command() {
 check_terraform() {
     if command -v terraform >/dev/null 2>&1; then
         log "✓ Terraform found: $(command -v terraform)"
+        local version=$(terraform version -json 2>/dev/null | grep -o '"terraform_version":"[^"]*"' | cut -d'"' -f4 2>/dev/null || terraform version | head -n1 | grep -o 'v[0-9.]*' | tr -d 'v')
+        log "  Version: $version"
         return 0
     else
         log "❌ Terraform not found"
-        log "   Expected location: $HOME/bin/terraform"
+        log "   Terraform must be pre-installed in air-gapped environment"
         return 1
     fi
 }
 
-check_dependencies() {
-    log "=== Checking Dependencies ==="
+check_offline_bundles() {
+    log "=== Checking Offline Bundles ==="
     local missing=0
-    local warn_only=0
     
-    # Check essential commands
-    check_command "bash" "Bash shell" || ((missing++))
-    check_command "curl" "curl" "apt-get install curl" || ((missing++))
-    check_command "grep" "grep" || ((missing++))
-    check_command "sed" "sed" || ((missing++))
-    check_command "awk" "awk" || ((missing++))
+    # Check if offline bundles directory exists
+    if [[ ! -d "$OFFLINE_BUNDLES" ]]; then
+        log "❌ Offline bundles directory not found: $OFFLINE_BUNDLES"
+        ((missing++))
+        return 1
+    fi
     
-    # Check optional commands
-    check_command "unzip" "unzip" "apt-get install unzip" "true" || ((warn_only++))
+    log "✓ Offline bundles directory found"
     
-    # Check Terraform
-    check_terraform || ((missing++))
+    # Check if provider files exist
+    local provider_dir="$OFFLINE_BUNDLES/providers/registry.terraform.io/e-breuninger/netbox/$NETBOX_PROVIDER_VERSION/linux_amd64"
+    local provider_binary="$provider_dir/terraform-provider-netbox_v$NETBOX_PROVIDER_VERSION"
     
-    # Check if provider is available
-    if [[ -f ".terraform/providers/registry.terraform.io/e-breuninger/netbox/$NETBOX_PROVIDER_VERSION/linux_amd64/terraform-provider-netbox_v$NETBOX_PROVIDER_VERSION" ]]; then
-        log "✓ NetBox provider found (version: $NETBOX_PROVIDER_VERSION)"
+    if [[ -f "$provider_binary" ]]; then
+        log "✓ NetBox provider binary found: $provider_binary"
     else
-        log "❌ NetBox provider not found"
+        log "❌ NetBox provider binary not found: $provider_binary"
         ((missing++))
     fi
     
-    log ""
-    if [[ $warn_only -gt 0 ]]; then
-        log "⚠️  $warn_only optional dependencies missing (unzip - needed for Terraform installation)"
+    # Check install script
+    if [[ -f "$OFFLINE_BUNDLES/install-providers.sh" ]]; then
+        log "✓ Provider install script found"
+    else
+        log "❌ Provider install script not found: $OFFLINE_BUNDLES/install-providers.sh"
+        ((missing++))
     fi
     
+    return $missing
+}
+
+check_dependencies() {
+    log "=== Checking Air-Gapped Environment ==="
+    local missing=0
+    
+    # Check essential commands (must be pre-installed)
+    check_command "bash" "Bash shell" "true" || ((missing++))
+    check_command "grep" "grep" "true" || ((missing++))
+    check_command "sed" "sed" "true" || ((missing++))
+    check_command "awk" "awk" "true" || ((missing++))
+    check_command "cp" "cp" "true" || ((missing++))
+    check_command "mkdir" "mkdir" "true" || ((missing++))
+    check_command "find" "find" "true" || ((missing++))
+    
+    # Check Terraform (must be pre-installed)
+    check_terraform || ((missing++))
+    
+    # Check offline bundles
+    check_offline_bundles || ((missing++))
+    
+    # Check if providers are already installed
+    local installed_provider=".terraform/providers/registry.terraform.io/e-breuninger/netbox/$NETBOX_PROVIDER_VERSION/linux_amd64/terraform-provider-netbox_v$NETBOX_PROVIDER_VERSION"
+    if [[ -f "$installed_provider" ]]; then
+        log "✓ NetBox provider already installed"
+    else
+        log "⚠️  NetBox provider not yet installed (run --install to fix)"
+    fi
+    
+    log ""
     if [[ $missing -eq 0 ]]; then
-        log "✅ Essential dependencies satisfied"
+        log "✅ Air-gapped environment ready"
         return 0
     else
-        log "❌ $missing critical dependencies missing"
+        log "❌ $missing critical components missing"
+        log "   This is an air-gapped environment - all dependencies must be pre-installed"
         return 1
     fi
 }
 
-create_terraform_bundle() {
-    log "=== Creating Terraform Provider Bundle ==="
+install_providers_offline() {
+    log "=== Installing Providers from Offline Bundles ==="
     
-    local bundle_dir="$SCRIPT_DIR/offline-bundles"
-    mkdir -p "$bundle_dir/providers"
-    mkdir -p "$bundle_dir/terraform"
-    
-    # Copy current provider if it exists
-    if [[ -d ".terraform/providers" ]]; then
-        log "📦 Copying current providers..."
-        cp -r .terraform/providers/* "$bundle_dir/providers/"
+    # Check if offline bundles exist
+    if [[ ! -d "$OFFLINE_BUNDLES" ]]; then
+        log "❌ Offline bundles directory not found: $OFFLINE_BUNDLES"
+        return 1
     fi
     
-    # Create provider bundle script
-    cat > "$bundle_dir/install-providers.sh" << 'EOF'
-#!/bin/bash
-# Provider installation script for air-gapped environments
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TARGET_DIR=".terraform/providers"
-
-echo "Installing Terraform providers for air-gapped environment..."
-
-if [[ ! -d "$SCRIPT_DIR/providers" ]]; then
-    echo "❌ Provider bundle not found in $SCRIPT_DIR/providers"
-    exit 1
-fi
-
-# Create target directory
-mkdir -p "$TARGET_DIR"
-
-# Copy providers
-echo "📦 Installing providers..."
-cp -r "$SCRIPT_DIR/providers/"* "$TARGET_DIR/"
-
-echo "✅ Providers installed successfully"
-echo "Provider location: $(pwd)/$TARGET_DIR"
-
-# List installed providers
-echo ""
-echo "Installed providers:"
-find "$TARGET_DIR" -name "terraform-provider-*" -type f | while read provider; do
-    echo "  - $(basename "$(dirname "$(dirname "$(dirname "$provider")")")")/$(basename "$(dirname "$(dirname "$provider")")")"
-done
-EOF
+    # Direct provider installation without external script
+    local provider_source="$OFFLINE_BUNDLES/providers"
+    local provider_dest="$SCRIPT_DIR/.terraform/providers"
     
-    chmod +x "$bundle_dir/install-providers.sh"
+    if [[ ! -d "$provider_source" ]]; then
+        log "❌ Provider bundle not found in $provider_source"
+        return 1
+    fi
     
-    # Create Terraform download script
-    cat > "$bundle_dir/download-terraform.sh" << EOF
-#!/bin/bash
-# Download Terraform binary for air-gapped deployment
-
-TERRAFORM_VERSION="$TERRAFORM_VERSION"
-ARCH="\$(uname -m)"
-OS="\$(uname -s | tr '[:upper:]' '[:lower:]')"
-
-case "\$ARCH" in
-    x86_64) ARCH="amd64" ;;
-    aarch64) ARCH="arm64" ;;
-    armv7l) ARCH="arm" ;;
-esac
-
-TERRAFORM_URL="https://releases.hashicorp.com/terraform/\${TERRAFORM_VERSION}/terraform_\${TERRAFORM_VERSION}_\${OS}_\${ARCH}.zip"
-
-echo "Downloading Terraform \$TERRAFORM_VERSION for \$OS/\$ARCH..."
-echo "URL: \$TERRAFORM_URL"
-
-curl -L -o "terraform_\${TERRAFORM_VERSION}_\${OS}_\${ARCH}.zip" "\$TERRAFORM_URL"
-
-if [[ \$? -eq 0 ]]; then
-    echo "✅ Download completed: terraform_\${TERRAFORM_VERSION}_\${OS}_\${ARCH}.zip"
-    echo ""
-    echo "To install:"
-    echo "  unzip terraform_\${TERRAFORM_VERSION}_\${OS}_\${ARCH}.zip"
-    echo "  sudo mv terraform /usr/local/bin/  # or move to \$HOME/bin/"
-else
-    echo "❌ Download failed"
-    exit 1
-fi
-EOF
+    # Create target directory structure
+    log "📦 Installing providers to $provider_dest..."
+    mkdir -p "$provider_dest"
     
-    chmod +x "$bundle_dir/download-terraform.sh"
-    
-    # Create installation README
-    cat > "$bundle_dir/README.md" << EOF
-# Air-Gapped Installation Bundle
-
-This bundle contains everything needed to run the NetBox Terraform project in an air-gapped environment.
-
-## Contents
-
-- \`providers/\` - Terraform provider binaries
-- \`install-providers.sh\` - Script to install providers
-- \`download-terraform.sh\` - Script to download Terraform (run in connected environment)
-
-## Installation Steps
-
-### 1. In Connected Environment (before going air-gapped)
-
-Run the download script to get Terraform binary:
-\`\`\`bash
-./download-terraform.sh
-\`\`\`
-
-### 2. In Air-Gapped Environment
-
-1. Extract this bundle to your target system
-2. Install Terraform binary:
-   \`\`\`bash
-   unzip terraform_*.zip
-   sudo mv terraform /usr/local/bin/
-   # or 
-   mkdir -p \$HOME/bin && mv terraform \$HOME/bin/
-   \`\`\`
-
-3. Navigate to your NetBox Terraform project directory
-4. Install providers:
-   \`\`\`bash
-   /path/to/bundle/install-providers.sh
-   \`\`\`
-
-5. Verify installation:
-   \`\`\`bash
-   terraform version
-   terraform providers
-   \`\`\`
-
-## Dependencies
-
-The following system packages must be installed:
-- bash
-- curl (for initial download only)
-- unzip
-- grep, sed, awk (standard Unix tools)
-
-EOF
-    
-    log "📁 Bundle created in: $bundle_dir"
-    log "✅ Offline bundle preparation complete"
-}
-
-install_dependencies() {
-    log "=== Installing Dependencies ==="
-    
-    # Check if running as root for system-wide installation
-    if [[ $EUID -eq 0 ]]; then
-        log "Running as root - will install system-wide"
-        PKG_INSTALL="apt-get install -y"
+    # Copy all provider files maintaining directory structure
+    if cp -r "$provider_source/"* "$provider_dest/"; then
+        log "✅ Providers copied successfully"
     else
-        log "Running as user - will install to \$HOME/bin"
-        mkdir -p "$HOME/bin"
+        log "❌ Failed to copy providers"
+        return 1
     fi
     
-    # Install Terraform if missing
-    if ! command -v terraform >/dev/null 2>&1; then
-        log "📥 Installing Terraform..."
-        
-        if [[ $EUID -eq 0 ]]; then
-            # System-wide installation
-            wget -O- https://apt.releases.hashicorp.com/gpg | gpg --dearmor | tee /usr/share/keyrings/hashicorp-archive-keyring.gpg
-            echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com \$(lsb_release -cs) main" | tee /etc/apt/sources.list.d/hashicorp.list
-            apt update && apt install terraform
+    # Make all provider binaries executable
+    find "$provider_dest" -name "terraform-provider-*" -type f -exec chmod +x {} \;
+    log "✓ Provider binaries made executable"
+    
+    # Verify installation
+    local installed_provider=".terraform/providers/registry.terraform.io/e-breuninger/netbox/$NETBOX_PROVIDER_VERSION/linux_amd64/terraform-provider-netbox_v$NETBOX_PROVIDER_VERSION"
+    if [[ -f "$installed_provider" ]]; then
+        log "✅ NetBox provider verified: $installed_provider"
+        # Make sure provider is executable
+        chmod +x "$installed_provider"
+    else
+        log "❌ Provider verification failed: $installed_provider"
+        return 1
+    fi
+    
+    return 0
+}
+
+setup_terraform_workspace() {
+    log "=== Setting up Terraform Workspace ==="
+    
+    # Create plugin cache directory to force offline mode
+    local plugin_dir="$SCRIPT_DIR/.terraform/providers"
+    
+    # Setup Terraform CLI configuration for offline mode
+    export TF_CLI_CONFIG_FILE="$SCRIPT_DIR/.terraformrc"
+    log "✓ Terraform CLI configured for offline mode"
+    
+    # Initialize Terraform if not already done
+    if [[ ! -d ".terraform" ]]; then
+        log "🔄 Initializing Terraform workspace (offline mode)..."
+        # Use -plugin-dir to prevent any network access
+        if terraform init -plugin-dir="$plugin_dir"; then
+            log "✅ Terraform workspace initialized (offline)"
         else
-            # User installation
-            ARCH="$(uname -m)"
-            OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
-            case "$ARCH" in
-                x86_64) ARCH="amd64" ;;
-                aarch64) ARCH="arm64" ;;
-                armv7l) ARCH="arm" ;;
-            esac
-            
-            TERRAFORM_URL="https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_${OS}_${ARCH}.zip"
-            
-            curl -L -o "/tmp/terraform.zip" "$TERRAFORM_URL"
-            unzip "/tmp/terraform.zip" -d "/tmp/"
-            mv "/tmp/terraform" "$HOME/bin/"
-            rm "/tmp/terraform.zip"
-            
-            log "✅ Terraform installed to $HOME/bin/terraform"
+            log "❌ Terraform initialization failed"
+            return 1
         fi
+    else
+        log "✓ Terraform workspace already exists"
     fi
     
-    log "✅ Dependencies installation complete"
+    # Verify provider is working
+    log "🔍 Verifying Terraform configuration..."
+    if terraform validate; then
+        log "✅ Terraform configuration is valid"
+    else
+        log "❌ Terraform configuration validation failed"
+        return 1
+    fi
+    
+    return 0
 }
 
-prepare_airgapped_scripts() {
-    log "=== Preparing Air-Gapped Script Versions ==="
+install_offline() {
+    log "=== Starting Air-Gapped Installation ==="
     
-    # Backup original scripts
-    cp add-prefix.sh add-prefix.sh.original
-    cp add-multiple-prefixes.sh add-multiple-prefixes.sh.original
+    # Install providers
+    if ! install_providers_offline; then
+        log "❌ Provider installation failed"
+        return 1
+    fi
     
-    # The scripts are already designed to work offline once dependencies are met
-    # We just need to ensure they use local Terraform installation
+    # Setup Terraform workspace
+    if ! setup_terraform_workspace; then
+        log "❌ Terraform workspace setup failed"
+        return 1
+    fi
     
-    log "✅ Scripts prepared for air-gapped use"
+    log "✅ Air-gapped installation completed successfully"
+    log ""
+    log "You can now use the NetBox Terraform scripts:"
+    log "  ./add-prefix.sh"
+    log "  ./add-multiple-prefixes.sh"
+    
+    return 0
 }
 
+# Main script logic
 main() {
-    local action=""
-    
     while [[ $# -gt 0 ]]; do
         case $1 in
             -h|--help)
@@ -316,16 +259,18 @@ main() {
                 exit 0
                 ;;
             -c|--check)
-                action="check"
-                shift
+                check_dependencies
+                exit $?
                 ;;
             -i|--install)
-                action="install"
-                shift
-                ;;
-            -p|--prepare)
-                action="prepare"
-                shift
+                if check_dependencies; then
+                    log "Environment checks passed, proceeding with installation..."
+                else
+                    log "Environment checks failed, cannot proceed with installation"
+                    exit 1
+                fi
+                install_offline
+                exit $?
                 ;;
             *)
                 echo "Unknown option: $1"
@@ -335,25 +280,9 @@ main() {
         esac
     done
     
-    if [[ -z "$action" ]]; then
-        show_help
-        exit 1
-    fi
-    
-    case "$action" in
-        check)
-            check_dependencies
-            ;;
-        install)
-            install_dependencies
-            check_dependencies
-            ;;
-        prepare)
-            check_dependencies
-            create_terraform_bundle
-            prepare_airgapped_scripts
-            ;;
-    esac
+    # Default action if no arguments
+    show_help
+    exit 1
 }
 
 main "$@"
